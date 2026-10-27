@@ -4,7 +4,10 @@
  * Real-time event handling, Leaflet spatial visualization, priority queue monitor,
  * and donor/hospital portals.
  */
-
+const API_BASE_URL = "https://blood-donation-backend-g0jx.onrender.com";
+function apiFetch(path, options) {
+  return apiFetch(`${API_BASE_URL}${path}`, options);
+}
 let hospitals = [];
 let donors = [];
 let activeDonorId = "donor_anuj";
@@ -111,7 +114,7 @@ async function handleLoginSubmit(e) {
   errEl.classList.add("hidden");
 
   try {
-    const res = await fetch("/api/auth/login", {
+    const res = apiFetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password })
@@ -162,7 +165,7 @@ async function handleDonorRegisterSubmit(e) {
   errEl.classList.add("hidden");
 
   try {
-    const res = await fetch("/api/auth/register/donor", {
+    const res = apiFetch("/api/auth/register/donor", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -214,7 +217,7 @@ async function handleHospitalRegisterSubmit(e) {
   errEl.classList.add("hidden");
 
   try {
-    const res = await fetch("/api/auth/register/hospital", {
+    const res = apiFetch("/api/auth/register/hospital", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -294,8 +297,7 @@ function switchTab(tabName) {
 
 // WebSocket Connection
 function initWebSocket() {
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${window.location.host}/ws/events`;
+  const wsUrl = `${API_BASE_URL.replace(/^http/, "ws")}/ws/events`;
   const statusEl = document.getElementById("ws-status");
 
   try {
@@ -439,7 +441,7 @@ async function refreshPeriodicData() {
 
 async function refreshStats() {
   try {
-    const res = await fetch("/api/health");
+    const res = apiFetch("/api/health");
     if (!res.ok) return;
     const data = await res.json();
     document.getElementById("stat-donors").textContent = data.active_donors;
@@ -450,7 +452,7 @@ async function refreshStats() {
 // Load Hospitals
 async function loadHospitals() {
   try {
-    const res = await fetch("/api/hospitals");
+    const res = apiFetch("/api/hospitals");
     hospitals = await res.json();
     const select = document.getElementById("req-hospital");
     select.innerHTML = hospitals.map(h => `<option value="${h.id}">${h.name} (${h.address})</option>`).join("");
@@ -463,7 +465,7 @@ async function loadHospitals() {
 // Load Donors
 async function loadDonors() {
   try {
-    const res = await fetch("/api/donors");
+    const res = apiFetch("/api/donors");
     donors = await res.json();
 
     const select = document.getElementById("active-donor-select");
@@ -495,7 +497,7 @@ async function handleDonorSelect(donorId) {
 
 async function loadDonorProfile(donorId) {
   try {
-    const res = await fetch(`/api/donors/${donorId}`);
+    const res = apiFetch(`/api/donors/${donorId}`);
     if (!res.ok) return;
     const donor = await res.json();
 
@@ -538,7 +540,7 @@ async function loadDonorProfile(donorId) {
 
 async function handleToggleAvailability(isAvailable) {
   try {
-    const res = await fetch(`/api/donors/${activeDonorId}/availability`, {
+    const res = apiFetch(`/api/donors/${activeDonorId}/availability`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ is_available: isAvailable })
@@ -562,7 +564,7 @@ async function handleCreateRequest(e) {
   const notes = document.getElementById("req-notes").value;
 
   try {
-    const res = await fetch("/api/requests", {
+    const res = await apiFet("/api/requests", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -614,7 +616,7 @@ async function handleCreateRequest(e) {
 // Load Blood Requests
 async function loadRequests() {
   try {
-    const res = await fetch("/api/requests");
+    const res = await apiFet("/api/requests");
     const requests = await res.json();
     const container = document.getElementById("requests-list");
 
@@ -719,7 +721,7 @@ async function loadRequests() {
 // Complete Donation Action
 async function handleCompleteDonation(requestId) {
   try {
-    const res = await fetch(`/api/requests/${requestId}/complete`, {
+    const res = await apiFet(`/api/requests/${requestId}/complete`, {
       method: "POST"
     });
     if (res.ok) {
@@ -736,7 +738,7 @@ async function handleCompleteDonation(requestId) {
 // Load Donor Alerts
 async function loadDonorAlerts() {
   try {
-    const res = await fetch(`/api/donors/${activeDonorId}`);
+    const res = await apiFet(`/api/donors/${activeDonorId}`);
     if (!res.ok) return;
     const donor = await res.json();
     const container = document.getElementById("donor-alerts-list");
@@ -825,7 +827,7 @@ async function loadDonorAlerts() {
 // Respond to Alert
 async function respondToAlert(notificationId, accept) {
   try {
-    const res = await fetch(`/api/alerts/${notificationId}/respond`, {
+    const res = await apiFet(`/api/alerts/${notificationId}/respond`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ accept: accept })
@@ -844,7 +846,7 @@ async function respondToAlert(notificationId, accept) {
 // Simulate Alert Timeout
 async function simulateTimeout(notificationId) {
   try {
-    const res = await fetch(`/api/alerts/${notificationId}/timeout`, {
+    const res = await apiFet(`/api/alerts/${notificationId}/timeout`, {
       method: "POST"
     });
     if (res.ok) {
@@ -860,7 +862,7 @@ async function simulateTimeout(notificationId) {
 // Load Priority Queue View
 async function loadQueueView() {
   try {
-    const res = await fetch("/api/queue");
+    const res = await apiFet("/api/queue");
     const data = await res.json();
     const tbody = document.getElementById("queue-table-body");
     const items = data.queue || [];
@@ -896,7 +898,7 @@ async function loadQueueView() {
 // Process Next Queue Item
 async function processNextQueueItem() {
   try {
-    const res = await fetch("/api/queue/process_next", { method: "POST" });
+    const res = await apiFet("/api/queue/process_next", { method: "POST" });
     const data = await res.json();
     if (data.status === "empty") {
       alert("Queue is empty. No requests waiting.");
@@ -913,7 +915,7 @@ async function processNextQueueItem() {
 // Load Events Stream
 async function loadEvents() {
   try {
-    const res = await fetch("/api/events");
+    const res = await apiFet("/api/events");
     const events = await res.json();
     const stream = document.getElementById("events-stream");
 
@@ -977,7 +979,7 @@ async function runSystemBenchmark() {
   btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Evaluating...</span>`;
 
   try {
-    const res = await fetch("/api/system/benchmark", { method: "POST" });
+    const res = await apiFet("/api/system/benchmark", { method: "POST" });
     const data = await res.json();
 
     document.getElementById("bm-avg-latency").textContent = `${data.average_match_time_ms} ms`;
@@ -1010,7 +1012,7 @@ async function runSystemBenchmark() {
 // Reset System Data
 async function resetSystemData(donorCount) {
   try {
-    const res = await fetch("/api/system/reset", {
+    const res = await apiFet("/api/system/reset", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ donor_count: donorCount })
