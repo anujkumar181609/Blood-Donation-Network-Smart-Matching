@@ -1,245 +1,265 @@
 # Blood Donation Network with Smart Matching
-### *An Event-Driven Platform for Finding the Right Donor in Time*
 
-**Chandigarh University &bull; Academic Year: 2026–27**  
-**Department of AIT-CSE-AIML (B.E. B.Tech)**  
-- **Authors**: Anuj Kumar `[24BAI70735]`, Shlok Kandola `[24BAI70823]`  
-- **Project Guide**: Ms. Amandeep Kaur Seekhon  
+An event-driven platform prototype that helps hospitals and requesters
+identify suitable blood donors faster by ranking eligible donors and
+prioritizing urgent requests.
 
----
+## Overview
 
-## 1. Executive Summary & Problem Context
+Finding a compatible blood donor during an emergency can be slow when
+requests are shared through phone calls or unstructured messaging
+groups. This project brings donor discovery, request prioritization,
+availability checks, and notifications into one platform.
 
-Blood cannot be manufactured and has a short shelf life, making healthcare systems heavily dependent on voluntary donors. In emergencies such as highway accidents, critical surgeries, or postpartum hemorrhages, the central challenge is rarely an absolute shortage of donors, but rather the **latency and friction in identifying a compatible, nearby, and immediately available donor**.
+The system is designed to rank donors using blood-group compatibility,
+availability, distance, and response history. Emergency requests receive
+higher priority, while event-driven notifications help track donor
+responses and escalate when a donor declines or does not respond.
 
-Traditional methods—such as phone trees, broadcast WhatsApp messages, and static registry lookups—are:
-1. **Unstructured and Slow**: Manual searching wastes precious minutes during golden-hour emergencies.
-2. **Ignorant of Distance & Urgency**: Static registries do not compute real travel distance or prioritize critical cases over routine transfusions.
-3. **Blind to Donor Cooldowns**: Contacting donors who gave blood within the last 90–120 days leads to frustration and wasted effort.
-4. **Prone to Request Starvation**: Routine and critical requests are treated alike.
-5. **Untracked & Unreliable**: No audit trail exists for who was contacted, who declined, or when to automatically escalate.
+> **Project status:** Academic prototype. Location and notification
+> behaviour may be simulated. This project is not a substitute for
+> medical advice, clinical eligibility checks, or official blood-bank
+> procedures.
 
-This platform solves these problems through a **loosely coupled, event-driven architecture**, a **4-step smart matching algorithm**, an **\(O(\log n)\) min-heap emergency priority queue**, and **automatic escalation**.
+## Key Features
 
----
+-   **Donor and requester workflows:** Organize donor profiles and blood
+    requests.
+-   **Blood-group compatibility:** Filter candidates using a blood-group
+    compatibility map.
+-   **Smart donor ranking:** Score eligible candidates using
+    compatibility, distance, availability, and response history.
+-   **Eligibility and cooldown checks:** Exclude unavailable donors and
+    donors within the configured post-donation cooldown period.
+-   **Urgency-based request queue:** Prioritize Critical, Urgent, and
+    Normal requests, with waiting time used to order requests of equal
+    priority.
+-   **Event-driven notifications:** Model events such as
+    `RequestCreated`, `DonorMatched`, `DonorAccepted`, `DonorDeclined`,
+    `NoResponseTimeout`, and `DonationCompleted`.
+-   **Scheduling and escalation:** Track availability and move to the
+    next suitable donor when a response is declined or times out.
+-   **Dashboards:** Support request tracking and donor
+    availability/history views.
+-   **Automated tests:** Includes tests for authentication,
+    compatibility, cooldowns, event flow, rate limiting, prioritization,
+    and scoring.
 
-## 2. System Architecture
+## How Smart Matching Works
 
-The platform is designed as loosely coupled microservices communicating through an asynchronous event bus:
+1.  **Compatibility filter** --- retain donors compatible with the
+    recipient's blood group.
 
-```mermaid
-flowchart TD
-    subgraph UI ["Interactive Frontend Web Application"]
-        HP["Hospital Portal"]
-        DP["Donor Portal"]
-        LM["GIS Spatial Map (Chandigarh Tricity)"]
-        PQM["Priority Queue Heap Monitor"]
-        EBS["Event Bus Stream"]
-        SIM["Simulation & Benchmark Lab"]
-    end
+2.  **Eligibility filter** --- remove unavailable donors and donors who
+    have not completed the configured cooldown period.
 
-    subgraph Backend ["FastAPI Backend Services"]
-        US["User & Hospital Service"]
-        RS["Request Service"]
-        PQ["Priority Queue Service\n(Min-Heap with Starvation Prevention)"]
-        MS["Smart Matching Service\n(Compatibility + Haversine + Scoring)"]
-        SS["Scheduling Service\n(NBTC 90d/120d Cooldown Engine)"]
-        NS["Notification & Escalation Service\n(In-App, SMS, Email Simulation)"]
-        EB["Event Bus (Pub/Sub Broker)"]
-    end
+3.  **Distance calculation** --- calculate distance from simulated donor
+    and hospital coordinates using the Haversine formula.
 
-    HP -->|Create Blood Request| RS
-    RS -->|Push Request O(log n)| PQ
-    RS -->|Emit RequestCreated| EB
-    EB -->|Trigger Matching| MS
-    MS -->|Query Coordinates & Availability| US
-    MS -->|Query Cooldown Status| SS
-    MS -->|Emit DonorMatched| EB
-    EB -->|Trigger Alerts| NS
-    NS -->|Alert Top Donors| DP
-    DP -->|Accept / Decline / Timeout| NS
-    NS -->|Emit DonorAccepted / Declined| EB
-    EB -->|On Decline: Escalate to Next Candidate| MS
-    HP -->|Mark Fulfilled| RS
-    RS -->|Emit DonationCompleted| EB
-    EB -->|Activate Cooldown Period| SS
-    EB -.->|Live WebSocket Stream| EBS
-    EB -.->|Real-time Updates| UI
-```
+4.  **Scoring and ranking** --- rank the remaining donors using a
+    weighted score:
 
----
+    `Score = w1 × BloodMatch + w2 × (1 / Distance) + w3 × Availability + w4 × ResponseHistory`
 
-## 2.1 User Service: Registration & Role-Based Authentication (Section 5.1)
+5.  **Notification** --- select the top-ranked donors for notification.
+    Weights can vary with urgency so distance and availability matter
+    more in critical cases.
 
-The system includes a dedicated **User Service** providing secure registration, login, and profiles for donors, hospitals, and admins:
+6.  **Escalation** --- if a donor declines or does not respond in time,
+    consider the next suitable donor.
 
-1. **Voluntary Donor Registration**:
-   - Collects personal information, contact credentials, blood group, gender, age, weight ($ \ge 45\text{ kg}$), and geolocation coordinates.
-   - Enforces a **Health Eligibility Declaration** (screening for chronic blood-borne conditions and NBTC guidelines).
-   - Automatically initializes donor cooldown calculations ($90\text{ days}$ for men, $120\text{ days}$ for women).
+The exact scoring weights and configuration are defined by the
+implementation. Any cooldown values are configurable prototype rules and
+must not be treated as medical guidance.
 
-2. **Hospital / Requester Registration**:
-   - Registers accredited medical facilities with official license/registration numbers, emergency contact lines, address, and Tricity GPS coordinates.
+## System Architecture
 
-3. **Role-Based Profiles & Pre-Seeded Academic Demo Accounts**:
-   - **Lead Author Persona**: `anuj@cu.ac.in` / `anuj123` (Anuj Kumar, 24BAI70735 - Voluntary Donor, $\text{O}^+$)
-   - **Co-Author Persona**: `shlok@cu.ac.in` / `shlok123` (Shlok Kandola, 24BAI70823 - Universal Donor, $\text{O}^-$)
-   - **Hospital Requester**: `pgimer@hospital.in` / `pgi123` (PGIMER Emergency Care)
-   - **System Administrator**: `admin@bloodnet.org` / `admin123` (Full Network Oversight)
+The project is organized into a Python backend, a JavaScript frontend,
+and automated tests.
 
----
-
-## 3. Mathematical Formulations & Algorithms
-
-### 3.1 Smart Matching 4-Step Pipeline
-
-#### Step 1: Blood Compatibility Filter
-Only donors whose blood group is compatible with the recipient are retained using the standard ABO/Rh compatibility matrix:
-- **Universal Donor**: $\text{O}^-$ (compatible with all 8 groups).
-- **Universal Recipient**: $\text{AB}^+$ (can receive from all 8 groups).
-- Exact matches and compatible Rh-negative units are verified before distance evaluation.
-
-#### Step 2: Health Eligibility & Cooldown Filter
-Donors are filtered out if:
-- Marked unavailable by the donor.
-- Age $< 18$ or $> 65$, or weight $< 45\text{ kg}$.
-- Last donation occurred within the mandatory cooldown period per **National Blood Transfusion Council (NBTC) India** guidelines:
-  $$\text{Cooldown}_{\text{required}} = \begin{cases} 90 \text{ days} & \text{if Gender = Male} \\ 120 \text{ days} & \text{if Gender = Female} \end{cases}$$
-
-#### Step 3: Haversine Geodesic Distance Formula
-Distance between donor coordinates $(\phi_1, \lambda_1)$ and hospital coordinates $(\phi_2, \lambda_2)$ is computed using the spherical Haversine equation:
-$$d = 2R \cdot \arcsin\left(\sqrt{\sin^2\left(\frac{\Delta\phi}{2}\right) + \cos\phi_1 \cdot \cos\phi_2 \cdot \sin^2\left(\frac{\Delta\lambda}{2}\right)}\right)$$
-where $R = 6371.0\text{ km}$ (Earth's radius), $\Delta\phi = \phi_2 - \phi_1$, and $\Delta\lambda = \lambda_2 - \lambda_1$.
-
-#### Step 4: Dynamic Urgency-Weighted Scoring Formula
-Each remaining eligible donor is assigned an aggregate score:
-$$\text{Score} = w_1 \cdot \text{BloodMatch} + w_2 \cdot \left(\frac{1}{1 + \frac{d}{10}}\right) + w_3 \cdot \text{Availability} + w_4 \cdot \text{ResponseHistory}$$
-
-- $\text{BloodMatch} = 1.0$ for exact identical group match, $0.75$ for compatible non-identical.
-- **Urgency-Dependent Weight Shifts**:
-  - **Critical** (Accident, active bleeding): Proximity and immediate availability take priority ($w_1 = 0.20, w_2 = 0.45, w_3 = 0.25, w_4 = 0.10$). Search radius: $50\text{ km}$; parallel alerts to top $3$ candidates.
-  - **Urgent** (Surgery within 24h): Balanced weights ($w_1 = 0.35, w_2 = 0.30, w_3 = 0.20, w_4 = 0.15$). Search radius: $30\text{ km}$; sequential alerts with escalation.
-  - **Normal** (Routine transfusion): Exact blood match prioritized to preserve universal $\text{O}^-$ reserves ($w_1 = 0.50, w_2 = 0.20, w_3 = 0.15, w_4 = 0.15$). Search radius: $20\text{ km}$.
-
----
-
-### 3.2 Emergency Priority Queue ($O(\log n)$ Min-Heap)
-
-Requests are held in a priority queue keyed by:
-$$\text{Priority Key} = (\text{Urgency Rank}, \text{Arrival Timestamp}, \text{Counter})$$
-- $\text{Urgency Rank}$: $\text{Critical} = 1 < \text{Urgent} = 2 < \text{Normal} = 3$.
-- **Starvation Prevention**: Requests of equal urgency are ordered by **FIFO arrival timestamp**. Older normal requests will not starve behind an influx of later normal requests.
-- Insertion and extraction operate in guaranteed $O(\log n)$ time.
-
----
-
-### 3.3 Event-Driven Notification Lifecycle & Escalation
-
-Subscribers react independently to published events:
-- `RequestCreated`: Queues request, immediately triggers matching for Critical cases.
-- `DonorMatched`: Matching service finds ranked candidates and initiates notification dispatch.
-- `DonorAlerted`: In-App, SMS, and Email simulated alerts dispatched to candidates.
-- `DonorDeclined` / `NoResponseTimeout`: The event bus triggers the matching service to select the **next-best ranked donor** and escalate.
-- `DonorAccepted`: Hospital notified; request transitions to `Accepted`.
-- `DonationCompleted`: Blood collection fulfilled; scheduling service activates donor cooldown ($90\text{d} / 120\text{d}$) and increments donation tally.
-
----
-
-## 4. Project Structure
-
-```
-fearless-pasteur/
+``` text
+Project/
 ├── backend/
-│   ├── __init__.py
-│   ├── models.py              # Pydantic schemas for Donor, Hospital, Request, Event
-│   ├── database.py            # AppState singleton, event bus wiring, lifecycle
-│   ├── event_bus.py           # Asynchronous pub/sub broker & audit history
-│   ├── matching_service.py    # 4-step smart matching & Haversine formula
-│   ├── priority_queue.py      # O(log n) min-heap priority queue
-│   ├── scheduling_service.py  # NBTC cooldown calculation (90d / 120d)
-│   ├── notification_service.py# Multi-channel alerts & escalation engine
-│   ├── synthetic_data.py      # Realistic demographic blood groups & Tricity GIS
-│   └── main.py                # FastAPI REST endpoints & WebSockets
+│   ├── database.py
+│   ├── event_bus.py
+│   ├── main.py
+│   ├── matching_service.py
+│   ├── models.py
+│   ├── notification_service.py
+│   ├── priority_queue.py
+│   ├── scheduling_service.py
+│   └── synthetic_data.py
 ├── frontend/
-│   ├── index.html             # Responsive single-page web application
-│   ├── app.js                 # Frontend state, WebSocket client, Leaflet GIS map
-│   └── styles.css             # Custom styles, animations, and status badges
+│   ├── app.js
+│   ├── index.html
+│   └── styles.css
 ├── tests/
-│   ├── test_compatibility.py  # ABO/Rh compatibility matrix verification
-│   ├── test_haversine.py      # Haversine distance & symmetry tests
-│   ├── test_scoring.py        # Dynamic urgency weights & ranking tests
-│   ├── test_priority_queue.py # Min-heap O(log n) & starvation prevention
-│   ├── test_cooldown.py       # NBTC 90d/120d cooldown logic verification
-│   └── test_event_flow.py     # End-to-end integration test (Escalation & Cooldown)
-├── benchmark.py               # Standalone evaluation & latency measurement suite
-├── run.py                     # One-click launcher script
-└── README.md                  # Comprehensive academic documentation
+├── benchmark.py
+├── run.py
+├── README.md
+└── .gitignore
 ```
 
----
+### Main components
 
-## 5. Verification & Testing
+-   **User and data layer:** Maintains application models and data
+    access.
+-   **Matching service:** Filters and ranks donor candidates.
+-   **Priority queue:** Orders requests by urgency and waiting time.
+-   **Event bus:** Enables services to react to application events
+    without being tightly coupled.
+-   **Scheduling service:** Manages donor availability and cooldowns.
+-   **Notification service:** Handles notification events and response
+    escalation.
+-   **Frontend:** Provides the browser-based user interface.
+-   **Tests and benchmark:** Help validate behaviour and evaluate
+    performance.
 
-### Running the Automated Test Suite (18 Tests)
-```bash
-python -m pytest -v
-```
-All 18 unit and integration tests pass cleanly with zero warnings:
-- Compatibility rules (Universal $\text{O}^-$, Universal $\text{AB}^+$, incompatible cross-types)
-- Haversine geodesic calculations across Chandigarh Tricity coordinates
-- Urgency weight adaptation (Critical proximity prioritization)
-- Min-heap ordering and starvation-prevention tiebreaker
-- Gender-specific cooldown period enforcement
-- Complete event-driven lifecycle with automatic decline escalation
+## Technology Stack
 
-### Running the Performance Benchmark
-```bash
-python benchmark.py
-```
-**Empirical Results (over 1,000 synthetic donors):**
-- **Synthetic Dataset Generation**: $1,000$ donors in $\approx 27\text{ ms}$ with realistic demographic distribution ($\text{O}^+ 37.3\%$, $\text{B}^+ 31.0\%$, $\text{A}^+ 22.8\%$, $\text{AB}^+ 6.2\%$, $\text{O}^- 1.5\%$).
-- **Priority Queue Insertion ($2,000$ items)**: $26.8\ \mu\text{s}$ per push ($O(\log n)$).
-- **Priority Queue Extraction ($2,000$ items)**: $3.5\ \mu\text{s}$ per pop.
-- **Average Smart Matching Latency**: $\approx 10.2\text{ ms}$ per request.
-- **Outcome**: Exceeds the synopsis goal ("returns suitable donors within seconds") by **over $100\times$**.
+-   **Backend:** Python
+-   **Frontend:** HTML, CSS, JavaScript
+-   **Testing:** pytest
+-   **Core concepts:** Event-driven architecture, publish/subscribe
+    messaging, priority queues/heaps, weighted ranking, blood-group
+    compatibility, Haversine distance calculation, synthetic data
 
----
+The repository's source code and dependency configuration are the source
+of truth for the exact frameworks and package versions.
 
-## 6. How to Run the Platform
+## Getting Started
 
 ### Prerequisites
-- Python 3.10+ (Tested on Python 3.13.1)
-- Installed dependencies: `fastapi`, `uvicorn`, `pydantic`, `pytest`, `pytest-asyncio`
 
-### Quick Start
-Execute the launcher script:
-```bash
+-   Python installed
+-   Git
+-   A modern web browser
+
+### 1. Clone the repository
+
+Replace `YOUR_GITHUB_USERNAME` with your GitHub username.
+
+``` bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/blood-donation-network-smart-matching.git
+cd blood-donation-network-smart-matching
+```
+
+### 2. Create and activate a virtual environment
+
+**Windows PowerShell**
+
+``` powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+**macOS / Linux**
+
+``` bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+If the repository contains a `requirements.txt` file:
+
+``` bash
+python -m pip install -r requirements.txt
+```
+
+If it does not, install the dependencies listed or imported by the
+project source files. Do not install arbitrary packages without checking
+the project's imports.
+
+### 4. Run the application
+
+The repository includes a root-level `run.py` entry point. Start with:
+
+``` bash
 python run.py
 ```
-This automatically boots the server on `http://127.0.0.1:8000` and launches the web browser.
 
----
+If the application prints a local URL, open that URL in your browser. If
+startup fails, check the terminal traceback and the project's
+configuration before changing the launch command.
 
-## 7. Interactive Features in the Web Dashboard
+### 5. Run tests
 
-1. **Hospital Portal**:
-   - Create emergency or routine blood requests with instant hospital selection (PGIMER, GMCH 32, Fortis, Max, CU Health Center).
-   - Live request tracking with smart match candidate breakdown, ranking scores, and contact information.
-   - 1-click **"Mark Donation Completed"** button triggering donor cooldown.
-2. **Donor Portal**:
-   - Switch active donor persona (includes pre-seeded authors **Anuj Kumar [24BAI70735]** and **Shlok Kandola [24BAI70823]**).
-   - Real-time **NBTC Cooldown Progress Bar** showing countdown days remaining and next eligible donation date.
-   - Live availability toggle.
-   - Interactive alerts with **Accept**, **Decline (Escalate)**, and **Simulate Timeout** buttons.
-3. **Live GIS Spatial Map**:
-   - Interactive Leaflet map displaying hospitals (red pins), eligible donors (green pins), cooling donors (amber pins).
-   - Dynamic emergency dispatch rings ($20\text{ km}$, $30\text{ km}$, $50\text{ km}$).
-4. **Priority Queue Monitor**:
-   - Live visualization of the min-heap.
-   - Audits waiting times in seconds and prevents request starvation.
-   - **"Extract & Match Next"** button to execute priority matching on demand.
-5. **Decoupled Event Bus Stream**:
-   - Real-time WebSocket event stream inspecting `RequestCreated`, `DonorMatched`, `DonorAlerted`, `DonorAccepted`, `DonorDeclined`, `NoResponseTimeout`, and `DonationCompleted`.
-6. **Simulation & Benchmark Lab**:
-   - One-click execution of the evaluation suite directly in the browser.
-   - Instant scalability testing: reseed with $60$, $500$, or $1,000$ donors.
+``` bash
+python -m pytest
+```
+
+To run a particular test file:
+
+``` bash
+python -m pytest tests/test_matching_service.py
+```
+
+Use the actual test filenames present in the repository if they differ.
+
+## Testing and Evaluation
+
+The project is designed to be evaluated using:
+
+-   **Time to first match:** How quickly the system returns a suitable
+    donor.
+-   **Top-ranked donor acceptance rate:** How often highly ranked donors
+    accept a request.
+-   **Queue waiting time by urgency:** Whether critical requests are
+    processed ahead of routine requests.
+-   **Matching correctness:** Whether compatibility and eligibility
+    rules are applied correctly.
+-   **Event-flow reliability:** Whether declines and timeouts trigger
+    the expected escalation behaviour.
+-   **Load behaviour:** Performance with larger synthetic donor and
+    request sets.
+
+Use synthetic data for development and benchmarking. Do not test with
+real donor health information unless the necessary authorization,
+consent, security, and privacy safeguards are in place.
+
+## Future Enhancements
+
+-   Integrate map and routing APIs for real travel distance and
+    estimated travel time.
+-   Add mobile support with consent-based location sharing and push
+    notifications.
+-   Explore machine learning for donor response likelihood and
+    blood-demand forecasting.
+-   Integrate with hospital and blood-bank inventory systems where
+    authorized.
+-   Extend the model to other donation workflows where clinically and
+    legally appropriate.
+-   Strengthen authentication, role-based access control, audit logging,
+    consent management, and encryption.
+
+## Privacy and Safety
+
+-   Use synthetic or anonymized data in public demos.
+-   Never commit `.env` files, credentials, private keys, or real donor
+    records.
+-   Treat compatibility, eligibility, and cooldown logic as prototype
+    rules until validated by qualified medical professionals and
+    applicable official guidance.
+-   Do not use this prototype to make clinical decisions or replace
+    blood-bank screening and procedures.
+
+## References
+
+-   World Health Organization --- *Blood Safety and Availability*:
+    https://www.who.int/news-room/fact-sheets/detail/blood-safety-and-availability
+-   Cormen, Leiserson, Rivest, and Stein --- *Introduction to
+    Algorithms* (priority queues and heaps).
+-   Hohpe and Woolf --- *Enterprise Integration Patterns* (messaging and
+    event-driven design).
+-   Sam Newman --- *Building Microservices* (service decomposition and
+    communication patterns).
+-   National Blood Transfusion Council, India --- blood donor selection
+    and referral guidance.
+-   e-RaktKosh, Government of India: https://eraktkosh.mohfw.gov.in/
+
+------------------------------------------------------------------------
+
+**Built as a software engineering project** exploring how event-driven
+systems and smart ranking can support faster blood-donor discovery.
