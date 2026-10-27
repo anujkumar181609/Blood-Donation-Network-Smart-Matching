@@ -1,1032 +1,822 @@
-/**
- * Frontend Application Logic
- * Blood Donation Network with Smart Matching
- * Real-time event handling, Leaflet spatial visualization, priority queue monitor,
- * and donor/hospital portals.
- */
-const API_BASE_URL = "https://blood-donation-backend-g0jx.onrender.com";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#e11d48">
 
-function apiFetch(path, options = {}) {
-  return fetch(`${API_BASE_URL}${path}`, options);
-}
-let hospitals = [];
-let donors = [];
-let activeDonorId = "donor_anuj";
-let map = null;
-let mapMarkers = [];
-let mapCircles = [];
-let ws = null;
-let currentUser = null;
+  <title>Blood Donation Network | Smart Matching</title>
+  <meta name="description" content="A smart blood donation network connecting donors and hospitals through real-time matching.">
 
-// On Page Load
-document.addEventListener("DOMContentLoaded", () => {
-  initAuth();
-  initWebSocket();
-  initMap();
-  loadInitialData();
-  // Periodic poll fallback in case WS disconnects
-  setInterval(refreshPeriodicData, 8000);
-});
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
 
-// Authentication System (Section 5.1 User Service)
-function initAuth() {
-  const saved = localStorage.getItem("blood_network_user");
-  if (saved) {
-    try {
-      currentUser = JSON.parse(saved);
-    } catch (e) {
-      currentUser = null;
-    }
-  }
+  <!-- Font Awesome -->
+  <link
+    rel="stylesheet"
+    href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.7.2/css/all.min.css"
+  >
 
-  // Default to Lead Author (Anuj Kumar) if no session exists yet
-  if (!currentUser) {
-    currentUser = {
-      token: "demo_token_anuj",
-      role: "donor",
-      user: {
-        id: "usr_anuj",
-        name: "Anuj Kumar [24BAI70735]",
-        email: "anuj@cu.ac.in",
-        role: "donor",
-        linked_entity_id: "donor_anuj"
-      }
-    };
-  }
+  <!-- Leaflet Map -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  >
 
-  updateAuthUI();
-}
+  <!-- Your stylesheet -->
+  <link rel="stylesheet" href="./styles.css">
 
-function updateAuthUI() {
-  if (!currentUser) return;
-  const nameEl = document.getElementById("user-display-name");
-  const roleEl = document.getElementById("user-display-role");
-
-  if (nameEl) nameEl.textContent = currentUser.user.name;
-  if (roleEl) {
-    roleEl.textContent = currentUser.role;
-    roleEl.className = {
-      "donor": "bg-rose-500 text-white text-[10px] px-1.5 py-0.2 rounded font-black uppercase",
-      "hospital": "bg-sky-600 text-white text-[10px] px-1.5 py-0.2 rounded font-black uppercase",
-      "admin": "bg-emerald-600 text-white text-[10px] px-1.5 py-0.2 rounded font-black uppercase"
-    }[currentUser.role] || "bg-slate-700 text-white text-[10px] px-1.5 py-0.2 rounded font-bold uppercase";
-  }
-
-  // If user is a donor, ensure active persona points to their entity
-  if (currentUser.role === "donor" && currentUser.user.linked_entity_id) {
-    activeDonorId = currentUser.user.linked_entity_id;
-  }
-}
-
-function openAuthModal() {
-  const modal = document.getElementById("auth-modal");
-  if (modal) modal.classList.remove("hidden");
-  switchAuthTab("login");
-}
-
-function closeAuthModal() {
-  const modal = document.getElementById("auth-modal");
-  if (modal) modal.classList.add("hidden");
-}
-
-function switchAuthTab(tabName) {
-  ["login", "reg-donor", "reg-hosp"].forEach(t => {
-    const pane = document.getElementById(`auth-pane-${t}`);
-    const btn = document.getElementById(`auth-btn-${t}`);
-    if (pane) pane.classList.add("hidden");
-    if (btn) {
-      btn.className = "flex-1 py-3 text-center text-slate-600 hover:text-slate-900";
-    }
-  });
-
-  const activePane = document.getElementById(`auth-pane-${tabName}`);
-  const activeBtn = document.getElementById(`auth-btn-${tabName}`);
-  if (activePane) activePane.classList.remove("hidden");
-  if (activeBtn) {
-    activeBtn.className = "flex-1 py-3 text-center border-b-2 border-rose-600 text-rose-700 bg-white font-bold";
-  }
-}
-
-async function handleLoginSubmit(e) {
-  e.preventDefault();
-  const email = document.getElementById("login-email").value.trim();
-  const password = document.getElementById("login-password").value;
-  const errEl = document.getElementById("login-error-msg");
-  errEl.classList.add("hidden");
-
-  try {
-    const res = apiFetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      setAuthSession(data.session);
-      closeAuthModal();
-    } else {
-      const err = await res.json();
-      errEl.textContent = err.detail || "Authentication failed.";
-      errEl.classList.remove("hidden");
-    }
-  } catch (err) {
-    console.error("Login request failed:", err);
-    console.error("Hospital registration failed:", err);
-    errEl.textContent = "Server communication error.";
-    errEl.classList.remove("hidden");
-  }
-}
-
-async function quickLoginDemo(email, password) {
-  const emailInput = document.getElementById("login-email");
-  const passInput = document.getElementById("login-password");
-  if (emailInput && passInput) {
-    emailInput.value = email;
-    passInput.value = password;
-  }
-  const form = emailInput.closest("form");
-  if (form) {
-    form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
-  }
-}
-
-async function handleDonorRegisterSubmit(e) {
-  e.preventDefault();
-  const name = document.getElementById("reg-donor-name").value.trim();
-  const email = document.getElementById("reg-donor-email").value.trim();
-  const password = document.getElementById("reg-donor-password").value;
-  const phone = document.getElementById("reg-donor-phone").value.trim();
-  const bloodGroup = document.getElementById("reg-donor-bg").value;
-  const gender = document.getElementById("reg-donor-gender").value;
-  const age = parseInt(document.getElementById("reg-donor-age").value, 10);
-  const weight = parseFloat(document.getElementById("reg-donor-weight").value);
-  const localityRaw = document.getElementById("reg-donor-locality").value;
-  const [address, latStr, lonStr] = localityRaw.split("|");
-  const healthEligible = document.getElementById("reg-donor-health").checked;
-  const errEl = document.getElementById("reg-donor-error");
-  errEl.classList.add("hidden");
-
-  try {
-    const res = apiFetch("/api/auth/register/donor", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name,
-        email,
-        password,
-        phone,
-        blood_group: bloodGroup,
-        gender,
-        age,
-        weight_kg: weight,
-        address,
-        latitude: parseFloat(latStr),
-        longitude: parseFloat(lonStr),
-        health_eligible: healthEligible,
-        is_available: true
-      })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      alert(`Welcome, ${name}! Your donor account has been registered.`);
-      await loadDonors();
-      setAuthSession(data.session);
-      closeAuthModal();
-      switchTab("donor");
-    } else {
-      const err = await res.json();
-      errEl.textContent = err.detail || "Registration failed.";
-      errEl.classList.remove("hidden");
-    }
-  } catch (err) {
-    console.error("Hospital registration failed:", err);
-    errEl.textContent = "Server communication error.";
-    errEl.classList.remove("hidden");
-  }
-}
-
-async function handleHospitalRegisterSubmit(e) {
-  e.preventDefault();
-  const name = document.getElementById("reg-hosp-name").value.trim();
-  const email = document.getElementById("reg-hosp-email").value.trim();
-  const password = document.getElementById("reg-hosp-password").value;
-  const phone = document.getElementById("reg-hosp-phone").value.trim();
-  const licenseNumber = document.getElementById("reg-hosp-license").value.trim();
-  const hospitalType = document.getElementById("reg-hosp-type").value;
-  const localityRaw = document.getElementById("reg-hosp-locality").value;
-  const [address, latStr, lonStr] = localityRaw.split("|");
-  const errEl = document.getElementById("reg-hosp-error");
-  errEl.classList.add("hidden");
-
-  try {
-    const res = apiFetch("/api/auth/register/hospital", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name,
-        email,
-        password,
-        phone,
-        address,
-        latitude: parseFloat(latStr),
-        longitude: parseFloat(lonStr),
-        hospital_type: hospitalType,
-        license_number: licenseNumber
-      })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      alert(`Institution "${name}" registered successfully.`);
-      await loadHospitals();
-      setAuthSession(data.session);
-      closeAuthModal();
-      switchTab("hospital");
-    } else {
-      const err = await res.json();
-      errEl.textContent = err.detail || "Registration failed.";
-      errEl.classList.remove("hidden");
-    }
-  } catch (err) {
-    console.error("Institution registration failed:", err);
-    errEl.textContent = "Server communication error.";
-    errEl.classList.remove("hidden");
-  }
-}
-
-function setAuthSession(session) {
-  currentUser = session;
-  localStorage.setItem("blood_network_user", JSON.stringify(session));
-  updateAuthUI();
-
-  if (session.role === "donor" && session.user.linked_entity_id) {
-    selectDonorAndSwitch(session.user.linked_entity_id);
-  } else if (session.role === "hospital") {
-    switchTab("hospital");
-    const hospSelect = document.getElementById("req-hospital");
-    if (hospSelect && session.user.linked_entity_id) {
-      hospSelect.value = session.user.linked_entity_id;
-    }
-  } else if (session.role === "admin") {
-    switchTab("queue");
-  }
-}
-
-
-// Tab Navigation
-function switchTab(tabName) {
-  document.querySelectorAll(".tab-pane").forEach(el => el.classList.add("hidden"));
-  document.querySelectorAll(".tab-btn").forEach(el => el.classList.remove("active-tab"));
-
-  const targetPane = document.getElementById(`tab-${tabName}`);
-  const targetBtn = document.getElementById(`tab-btn-${tabName}`);
-
-  if (targetPane) targetPane.classList.remove("hidden");
-  if (targetBtn) targetBtn.classList.add("active-tab");
-
-  if (tabName === "map") {
-    setTimeout(() => {
-      if (map) map.invalidateSize();
-    }, 200);
-  } else if (tabName === "queue") {
-    loadQueueView();
-  } else if (tabName === "events") {
-    loadEvents();
-  } else if (tabName === "donor") {
-    loadDonorProfile(activeDonorId);
-    loadDonorAlerts();
-  }
-}
-
-// WebSocket Connection
-function initWebSocket() {
-  const wsUrl = `${API_BASE_URL.replace(/^http/, "ws")}/ws/events`;
-  const statusEl = document.getElementById("ws-status");
-
-  try {
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      if (statusEl) {
-        statusEl.textContent = "Live EventBus: Connected";
-        statusEl.className = "font-medium text-emerald-300";
-      }
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const sysEvent = JSON.parse(event.data);
-        handleIncomingEvent(sysEvent);
-      } catch (e) {
-        console.error("WS Parse error", e);
-      }
-    };
-
-    ws.onclose = () => {
-      if (statusEl) {
-        statusEl.textContent = "Live EventBus: Reconnecting...";
-        statusEl.className = "font-medium text-amber-300";
-      }
-      setTimeout(initWebSocket, 3000);
-    };
-
-    ws.onerror = () => {
-      if (statusEl) {
-        statusEl.textContent = "Live EventBus: Offline";
-        statusEl.className = "font-medium text-rose-300";
-      }
-    };
-  } catch (err) {
-    console.warn("WebSocket init error", err);
-  }
-}
-
-function handleIncomingEvent(event) {
-  prependEventToStream(event);
-  // Auto-refresh relevant tabs
-  loadRequests();
-  loadQueueView();
-  loadDonorAlerts();
-  refreshStats();
-}
-
-// Map Initialization
-function initMap() {
-  const mapContainer = document.getElementById("leaflet-map");
-  if (!mapContainer || map) return;
-
-  // Center around Chandigarh Tricity
-  map = L.map("leaflet-map").setView([30.7333, 76.7450], 11);
-
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 18,
-    attribution: '&copy; <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
-  }).addTo(map);
-}
-
-function updateMapMarkers() {
-  if (!map) return;
-
-  // Clear existing markers & circles
-  mapMarkers.forEach(m => map.removeLayer(m));
-  mapCircles.forEach(c => map.removeLayer(c));
-  mapMarkers = [];
-  mapCircles = [];
-
-  // Custom Icons
-  const hospitalIcon = L.divIcon({
-    html: '<div style="background-color:#dc2626; color:white; border-radius:50%; width:26px; height:26px; display:flex; align-items:center; justify-content:center; border:2px solid white; box-shadow:0 2px 4px rgba(0,0,0,0.3); font-weight:bold; font-size:12px;"><i class="fa-solid fa-hospital"></i></div>',
-    className: 'custom-hosp-pin',
-    iconSize: [26, 26],
-    iconAnchor: [13, 13]
-  });
-
-  // Plot Hospitals
-  hospitals.forEach(h => {
-    const marker = L.marker([h.latitude, h.longitude], { icon: hospitalIcon }).addTo(map);
-    marker.bindPopup(`
-      <div class="space-y-1">
-        <strong class="text-rose-800 text-sm font-bold">${h.name}</strong>
-        <p class="text-xs text-slate-600">${h.hospital_type}</p>
-        <p class="text-[11px] text-slate-500">${h.address} | Phone: ${h.phone}</p>
-      </div>
-    `);
-    mapMarkers.push(marker);
-  });
-
-  // Plot Donors
-  donors.forEach(d => {
-    const isEligible = d.is_eligible && d.is_available;
-    const color = isEligible ? "#10b981" : "#f59e0b";
-
-    const donorIcon = L.divIcon({
-      html: `<div style="background-color:${color}; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; border:2px solid white; box-shadow:0 1px 3px rgba(0,0,0,0.25); font-weight:bold; font-size:9px;">${d.blood_group}</div>`,
-      className: 'custom-donor-pin',
-      iconSize: [20, 20],
-      iconAnchor: [10, 10]
-    });
-
-    const marker = L.marker([d.latitude, d.longitude], { icon: donorIcon }).addTo(map);
-    marker.bindPopup(`
-      <div class="space-y-1 text-xs">
-        <strong class="text-slate-900">${d.name}</strong> (${d.blood_group})
-        <p class="text-slate-600">${d.address}</p>
-        <p><span class="font-semibold">Status:</span> ${d.cooldown_info ? d.cooldown_info.status_label : (d.is_available ? 'Available' : 'Unavailable')}</p>
-        <button onclick="selectDonorAndSwitch('${d.id}')" class="mt-1 bg-rose-600 text-white text-[10px] px-2 py-0.5 rounded hover:bg-rose-700">View Persona</button>
-      </div>
-    `);
-    mapMarkers.push(marker);
-  });
-}
-
-function selectDonorAndSwitch(donorId) {
-  activeDonorId = donorId;
-  const selectEl = document.getElementById("active-donor-select");
-  if (selectEl) selectEl.value = donorId;
-  switchTab("donor");
-}
-
-// Initial Data Load
-async function loadInitialData() {
-  await Promise.all([
-    loadHospitals(),
-    loadDonors(),
-    loadRequests(),
-    loadQueueView(),
-    loadEvents()
-  ]);
-  refreshStats();
-}
-
-async function refreshPeriodicData() {
-  refreshStats();
-}
-
-async function refreshStats() {
-  try {
-    const res = apiFetch("/api/health");
-    if (!res.ok) return;
-    const data = await res.json();
-    document.getElementById("stat-donors").textContent = data.active_donors;
-    document.getElementById("stat-queue").textContent = data.queue_size;
-  } catch (e) {}
-}
-
-// Load Hospitals
-async function loadHospitals() {
-  try {
-    const res = apiFetch("/api/hospitals");
-    hospitals = await res.json();
-    const select = document.getElementById("req-hospital");
-    select.innerHTML = hospitals.map(h => `<option value="${h.id}">${h.name} (${h.address})</option>`).join("");
-    updateMapMarkers();
-  } catch (err) {
-    console.error("Failed loading hospitals", err);
-  }
-}
-
-// Load Donors
-async function loadDonors() {
-  try {
-    const res = apiFetch("/api/donors");
-    donors = await res.json();
-
-    const select = document.getElementById("active-donor-select");
-    select.innerHTML = donors.map(d => {
-      const tag = d.id === "donor_anuj" ? " [Lead Author / O+]" : (d.id === "donor_shlok" ? " [Co-Author / O- Universal]" : "");
-      return `<option value="${d.id}">${d.name} (${d.blood_group}, ${d.gender})${tag}</option>`;
-    }).join("");
-
-    if (donors.some(d => d.id === activeDonorId)) {
-      select.value = activeDonorId;
-    } else if (donors.length > 0) {
-      activeDonorId = donors[0].id;
-      select.value = activeDonorId;
+  <style>
+    body {
+      margin: 0;
+      background: #f8fafc;
+      color: #0f172a;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
     }
 
-    loadDonorProfile(activeDonorId);
-    updateMapMarkers();
-  } catch (err) {
-    console.error("Failed loading donors", err);
-  }
-}
-
-// Donor Persona Switching
-async function handleDonorSelect(donorId) {
-  activeDonorId = donorId;
-  await loadDonorProfile(donorId);
-  loadDonorAlerts();
-}
-
-async function loadDonorProfile(donorId) {
-  try {
-    const res = apiFetch(`/api/donors/${donorId}`);
-    if (!res.ok) return;
-    const donor = await res.json();
-
-    document.getElementById("donor-card-name").textContent = donor.name;
-    document.getElementById("donor-card-location").textContent = `${donor.address} (${donor.latitude.toFixed(3)}, ${donor.longitude.toFixed(3)})`;
-    document.getElementById("donor-card-bg").textContent = donor.blood_group;
-    document.getElementById("donor-card-meta").textContent = `${donor.gender}, ${donor.age} yrs`;
-    document.getElementById("donor-card-weight").textContent = `${donor.weight_kg} kg`;
-    document.getElementById("donor-card-donations").textContent = `${donor.total_donations} completed`;
-    document.getElementById("donor-card-response").textContent = `${Math.round(donor.response_history_rate * 100)}% reliability`;
-
-    // Cooldown status
-    const cInfo = donor.cooldown_info;
-    const badge = document.getElementById("donor-cooldown-badge");
-    const bar = document.getElementById("donor-cooldown-bar");
-    const desc = document.getElementById("donor-cooldown-desc");
-
-    if (cInfo.in_cooldown) {
-      badge.textContent = `Cooling Down (${cInfo.days_remaining}d left)`;
-      badge.className = "px-2 py-0.5 rounded text-[11px] font-bold bg-amber-100 text-amber-800";
-      const pct = Math.max(0, Math.min(100, Math.round(((cInfo.required_cooldown_days - cInfo.days_remaining) / cInfo.required_cooldown_days) * 100)));
-      bar.style.width = `${pct}%`;
-      bar.className = "bg-amber-500 h-2 rounded-full";
-      desc.textContent = `Eligible on ${cInfo.next_eligible_date}. Cooldown rule: ${cInfo.required_cooldown_days} days for ${donor.gender}.`;
-    } else {
-      badge.textContent = "Ready to Donate";
-      badge.className = "px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-100 text-emerald-800";
-      bar.style.width = "100%";
-      bar.className = "bg-emerald-500 h-2 rounded-full";
-      desc.textContent = `Fully eligible under NBTC health criteria (${cInfo.required_cooldown_days}-day period fulfilled).`;
+    .active-tab {
+      background: #ffe4e6 !important;
+      color: #be123c !important;
+      border-color: #e11d48 !important;
+      font-weight: 700;
     }
 
-    // Availability toggle
-    const toggle = document.getElementById("donor-availability-toggle");
-    toggle.checked = donor.is_available;
-  } catch (err) {
-    console.error("Error loading donor profile", err);
-  }
-}
-
-async function handleToggleAvailability(isAvailable) {
-  try {
-    const res = apiFetch(`/api/donors/${activeDonorId}/availability`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_available: isAvailable })
-    });
-    if (res.ok) {
-      loadDonors();
-    }
-  } catch (e) {
-    console.error("Failed toggling availability", e);
-  }
-}
-
-// Hospital Blood Request Creation
-async function handleCreateRequest(e) {
-  e.preventDefault();
-  const hospitalId = document.getElementById("req-hospital").value;
-  const patientName = document.getElementById("req-patient").value;
-  const bloodGroup = document.getElementById("req-blood-group").value;
-  const units = parseInt(document.getElementById("req-units").value, 10);
-  const urgency = document.querySelector('input[name="urgency"]:checked').value;
-  const notes = document.getElementById("req-notes").value;
-
-  try {
-    const res = await apiFetch("/api/requests", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        patient_name: patientName,
-        hospital_id: hospitalId,
-        blood_group: bloodGroup,
-        units_required: units,
-        urgency: urgency,
-        notes: notes
-      })
-    });
-
-    if (res.ok) {
-      const created = await res.json();
-      document.getElementById("req-patient").value = "";
-      document.getElementById("req-notes").value = "";
-      loadRequests();
-      loadQueueView();
-      loadDonorAlerts();
-      refreshStats();
-
-      // Highlight dispatch on map if map is open
-      if (map) {
-        const hosp = hospitals.find(h => h.id === hospitalId);
-        if (hosp) {
-          const radiusMeters = urgency === "Critical" ? 50000 : (urgency === "Urgent" ? 30000 : 20000);
-          const circleColor = urgency === "Critical" ? "#e11d48" : (urgency === "Urgent" ? "#f59e0b" : "#3b82f6");
-          const circle = L.circle([hosp.latitude, hosp.longitude], {
-            radius: radiusMeters,
-            color: circleColor,
-            fillColor: circleColor,
-            fillOpacity: 0.12,
-            weight: 2,
-            dashArray: "4, 6"
-          }).addTo(map);
-          mapCircles.push(circle);
-          map.setView([hosp.latitude, hosp.longitude], 11);
-        }
-      }
-    } else {
-      const err = await res.json();
-      alert("Error creating request: " + err.detail);
-    }
-  } catch (err) {
-    console.error("Request creation failed", err);
-  }
-}
-
-// Load Blood Requests
-async function loadRequests() {
-  try {
-    const res = await apiFetch("/api/requests");
-    const requests = await res.json();
-    const container = document.getElementById("requests-list");
-
-    if (!requests || requests.length === 0) {
-      container.innerHTML = `<div class="text-center py-10 text-slate-400">No active blood requests. Create one above to initiate smart matching!</div>`;
-      return;
+    .tab-pane.hidden,
+    .hidden {
+      display: none !important;
     }
 
-    container.innerHTML = requests.map(req => {
-      const urgencyBadge = {
-        "Critical": "bg-rose-100 text-rose-800 border-rose-300",
-        "Urgent": "bg-amber-100 text-amber-800 border-amber-300",
-        "Normal": "bg-blue-100 text-blue-800 border-blue-300"
-      }[req.urgency] || "bg-slate-100 text-slate-800";
+    #leaflet-map {
+      width: 100%;
+      height: 440px;
+      min-height: 320px;
+      z-index: 1;
+      border-radius: 12px;
+    }
 
-      const statusBadge = {
-        "Queued": "bg-purple-100 text-purple-800",
-        "Matching": "bg-sky-100 text-sky-800 animate-pulse",
-        "Notifying": "bg-amber-100 text-amber-800 font-bold",
-        "Accepted": "bg-emerald-100 text-emerald-800 font-bold",
-        "Fulfilled": "bg-slate-100 text-slate-700",
-        "Cancelled": "bg-red-100 text-red-700"
-      }[req.status] || "bg-slate-100";
+    .tab-btn {
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
 
-      // Match breakdown
-      let matchesHtml = "";
-      if (req.matched_donors && req.matched_donors.length > 0) {
-        matchesHtml = `
-          <div class="mt-3 pt-3 border-t border-slate-100">
-            <div class="flex items-center justify-between text-xs font-semibold text-slate-700 mb-2">
-              <span>Top Smart-Matched Donors (${req.matched_donors.length} found):</span>
-              <span class="text-[10px] text-slate-500">Ranked by Blood Compatibility &bull; Distance &bull; Availability &bull; Response History</span>
-            </div>
-            <div class="space-y-1.5">
-              ${req.matched_donors.slice(0, 4).map(m => {
-                const isAlerted = req.current_alerted_donor_ids.includes(m.donor_id);
-                const isAccepted = req.accepted_donor_id === m.donor_id;
-                let donorBadge = isAccepted
-                  ? `<span class="bg-emerald-600 text-white px-2 py-0.5 rounded text-[10px] font-bold"><i class="fa-solid fa-check"></i> Accepted Donor</span>`
-                  : (isAlerted ? `<span class="bg-amber-500 text-white px-2 py-0.5 rounded text-[10px]"><i class="fa-solid fa-bell"></i> Alerted</span>` : `<span class="text-slate-400 text-[10px]">Candidate</span>`);
+    input, select, textarea {
+      max-width: 100%;
+    }
 
-                return `
-                  <div class="flex items-center justify-between text-xs bg-slate-50 px-2.5 py-1.5 rounded border border-slate-100">
-                    <div class="flex items-center space-x-2">
-                      <span class="font-mono text-slate-400 font-bold">#${m.rank}</span>
-                      <strong class="text-slate-800">${m.donor_name}</strong>
-                      <span class="bg-rose-50 text-rose-700 font-bold px-1.5 py-0.2 rounded text-[10px]">${m.donor_blood_group}</span>
-                      <span class="text-slate-500 text-[11px]">&bull; ${m.distance_km} km</span>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                      <span class="text-[11px] text-slate-600 font-medium">Score: <strong class="text-slate-900">${Math.round(m.total_score * 100)}%</strong></span>
-                      ${donorBadge}
-                    </div>
-                  </div>
-                `;
-              }).join("")}
-            </div>
-          </div>
-        `;
-      }
+    .field {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: white;
+      outline: none;
+    }
 
-      // Complete donation button if Accepted
-      let actionBtn = "";
-      if (req.status === "Accepted") {
-        actionBtn = `
-          <button onclick="handleCompleteDonation('${req.id}')" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold px-3 py-1.5 rounded shadow transition flex items-center space-x-1.5">
-            <i class="fa-solid fa-check-circle"></i>
-            <span>Mark Donation Completed (Start Cooldown)</span>
-          </button>
-        `;
-      }
+    .field:focus {
+      border-color: #e11d48;
+      box-shadow: 0 0 0 2px #ffe4e6;
+    }
 
-      return `
-        <div class="border border-slate-200 rounded-xl p-4 bg-white shadow-sm hover:border-slate-300 transition">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div class="flex items-center space-x-3">
-              <span class="w-10 h-10 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 font-black flex items-center justify-center text-sm">
-                ${req.blood_group}
-              </span>
-              <div>
-                <div class="flex items-center space-x-2">
-                  <h3 class="font-bold text-slate-800 text-sm">${req.patient_name}</h3>
-                  <span class="border px-2 py-0.2 rounded text-[10px] font-bold ${urgencyBadge}">${req.urgency}</span>
-                  <span class="px-2 py-0.2 rounded text-[10px] font-semibold ${statusBadge}">${req.status}</span>
-                </div>
-                <p class="text-xs text-slate-500">${req.hospital_name} &bull; ${req.units_required} Unit(s) required &bull; ${req.notes || "No extra clinical notes"}</p>
-              </div>
-            </div>
-            <div class="flex items-center space-x-2">
-              ${actionBtn}
-            </div>
-          </div>
-          ${matchesHtml}
+    .primary-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 15px;
+      border-radius: 8px;
+      background: #e11d48;
+      color: white;
+      font-weight: 700;
+      transition: background 0.2s;
+    }
+
+    .primary-btn:hover {
+      background: #be123c;
+    }
+
+    .secondary-btn {
+      padding: 9px 13px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: white;
+      font-weight: 600;
+    }
+
+    .section-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      background: white;
+      padding: 20px;
+      box-shadow: 0 2px 8px rgb(15 23 42 / 4%);
+    }
+
+    .table-scroll {
+      width: 100%;
+      overflow-x: auto;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      margin-right: 6px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 py-4 flex flex-wrap items-center justify-between gap-4">
+
+      <a href="./index.html" class="flex items-center gap-3">
+        <div class="w-11 h-11 rounded-xl bg-rose-600 text-white flex items-center justify-center text-xl">
+          <i class="fa-solid fa-droplet"></i>
         </div>
-      `;
-    }).join("");
-  } catch (err) {
-    console.error("Failed loading requests", err);
-  }
-}
 
-// Complete Donation Action
-async function handleCompleteDonation(requestId) {
-  try {
-    const res = await apiFetch(`/api/requests/${requestId}/complete`, {
-      method: "POST"
-    });
-    if (res.ok) {
-      loadRequests();
-      loadDonors();
-      loadQueueView();
-      loadDonorAlerts();
-    }
-  } catch (err) {
-    console.error("Failed completing donation", err);
-  }
-}
-
-// Load Donor Alerts
-async function loadDonorAlerts() {
-  try {
-    const res = await apiFetch(`/api/donors/${activeDonorId}`);
-    if (!res.ok) return;
-    const donor = await res.json();
-    const container = document.getElementById("donor-alerts-list");
-    const notifications = donor.notifications || [];
-
-    // Update notification badge count in tabs
-    const pendingCount = notifications.filter(n => n.status === "Delivered" || n.status === "Pending").length;
-    const badgeCountEl = document.getElementById("donor-badge-count");
-    if (badgeCountEl) {
-      if (pendingCount > 0) {
-        badgeCountEl.textContent = pendingCount;
-        badgeCountEl.classList.remove("hidden");
-      } else {
-        badgeCountEl.classList.add("hidden");
-      }
-    }
-
-    if (notifications.length === 0) {
-      container.innerHTML = `<div class="text-center py-12 text-slate-400">No match alerts for ${donor.name} yet. Trigger a request to evaluate!</div>`;
-      return;
-    }
-
-    // Sort newest first
-    notifications.sort((a, b) => new Date(b.sent_at) - new Date(a.sent_at));
-
-    container.innerHTML = notifications.map(notif => {
-      const isPending = notif.status === "Delivered" || notif.status === "Pending";
-      const isCritical = notif.urgency === "Critical";
-
-      let actionButtons = "";
-      if (isPending) {
-        actionButtons = `
-          <div class="flex items-center gap-2 mt-3 pt-2 border-t border-slate-100">
-            <button onclick="respondToAlert('${notif.id}', true)" class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-3.5 py-1.5 rounded-lg shadow transition flex items-center space-x-1.5">
-              <i class="fa-solid fa-thumbs-up"></i>
-              <span>Accept Request</span>
-            </button>
-            <button onclick="respondToAlert('${notif.id}', false)" class="bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold text-xs px-3 py-1.5 rounded-lg border border-rose-200 transition flex items-center space-x-1.5">
-              <i class="fa-solid fa-thumbs-down"></i>
-              <span>Decline (Escalate to Next)</span>
-            </button>
-            <button onclick="simulateTimeout('${notif.id}')" class="bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs px-2.5 py-1.5 rounded-lg transition" title="Simulate 5-minute unanswered timeout">
-              <i class="fa-solid fa-clock"></i> Simulate Timeout
-            </button>
-          </div>
-        `;
-      } else {
-        const statusColors = {
-          "Accepted": "text-emerald-700 font-bold",
-          "Declined": "text-rose-700 font-semibold",
-          "Timed Out": "text-amber-700 italic"
-        }[notif.status] || "text-slate-600";
-        actionButtons = `
-          <div class="mt-2 text-xs ${statusColors}">
-            Response: ${notif.status} at ${new Date(notif.responded_at || notif.sent_at).toLocaleTimeString()}
-          </div>
-        `;
-      }
-
-      const urgencyBanner = isCritical ? "border-l-4 border-l-rose-600 bg-rose-50/30" : "border-l-4 border-l-amber-500 bg-white";
-
-      return `
-        <div class="border border-slate-200 rounded-xl p-4 shadow-sm ${urgencyBanner}">
-          <div class="flex items-center justify-between text-xs mb-1">
-            <span class="font-bold text-slate-800 flex items-center space-x-2">
-              <i class="fa-solid fa-paper-plane text-rose-600"></i>
-              <span>${notif.channel} Alert &bull; ${notif.hospital_name}</span>
-            </span>
-            <span class="text-slate-400 text-[11px]">${new Date(notif.sent_at).toLocaleTimeString()}</span>
-          </div>
-          <p class="text-xs text-slate-700 font-medium my-1.5">${notif.message}</p>
-          <div class="text-[11px] text-slate-500 flex items-center space-x-3">
-            <span>Blood Needed: <strong class="text-rose-700">${notif.blood_group_needed}</strong></span>
-            <span>Distance: <strong>${notif.distance_km} km</strong></span>
-            <span>Urgency: <strong>${notif.urgency}</strong></span>
-          </div>
-          ${actionButtons}
+        <div>
+          <h1 class="text-lg sm:text-xl font-black text-slate-900">
+            BloodLink
+          </h1>
+          <p class="text-xs text-slate-500">
+            Smart Blood Donation Network
+          </p>
         </div>
-      `;
-    }).join("");
-  } catch (err) {
-    console.error("Failed loading donor alerts", err);
-  }
-}
+      </a>
 
-// Respond to Alert
-async function respondToAlert(notificationId, accept) {
-  try {
-    const res = await apiFetch(`/api/alerts/${notificationId}/respond`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ accept: accept })
-    });
-    if (res.ok) {
-      loadDonorAlerts();
-      loadRequests();
-      loadDonors();
-      loadQueueView();
-    }
-  } catch (err) {
-    console.error("Failed responding to alert", err);
-  }
-}
+      <div class="flex items-center gap-3">
+        <div class="text-right">
+          <p id="user-display-name" class="text-sm font-bold text-slate-800">
+            Guest User
+          </p>
+          <span id="user-display-role"
+                class="text-xs text-slate-500 uppercase">
+            Donor
+          </span>
+        </div>
 
-// Simulate Alert Timeout
-async function simulateTimeout(notificationId) {
-  try {
-    const res = await apiFetch(`/api/alerts/${notificationId}/timeout`, {
-      method: "POST"
-    });
-    if (res.ok) {
-      loadDonorAlerts();
-      loadRequests();
-      loadQueueView();
-    }
-  } catch (err) {
-    console.error("Failed simulating timeout", err);
-  }
-}
-
-// Load Priority Queue View
-async function loadQueueView() {
-  try {
-    const res = await apiFetch("/api/queue");
-    const data = await res.json();
-    const tbody = document.getElementById("queue-table-body");
-    const items = data.queue || [];
-
-    if (items.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="6" class="text-center py-8 text-slate-400">Priority queue is currently empty. All blood requests processed!</td></tr>`;
-      return;
-    }
-
-    tbody.innerHTML = items.map((item, idx) => {
-      const urgencyBadge = {
-        "Critical": "bg-rose-100 text-rose-800 font-bold",
-        "Urgent": "bg-amber-100 text-amber-800 font-bold",
-        "Normal": "bg-blue-100 text-blue-800 font-bold"
-      }[item.urgency] || "bg-slate-100";
-
-      return `
-        <tr class="hover:bg-slate-50 transition">
-          <td class="py-2.5 px-3 font-mono font-bold text-slate-900">#${idx + 1}</td>
-          <td class="py-2.5 px-3"><span class="px-2 py-0.5 rounded text-[11px] ${urgencyBadge}">${item.urgency} (Rank ${item.urgency_rank})</span></td>
-          <td class="py-2.5 px-3 font-semibold text-slate-800">${item.patient_name} <span class="text-slate-500 font-normal">at ${item.hospital_name}</span></td>
-          <td class="py-2.5 px-3 font-bold text-rose-700">${item.blood_group}</td>
-          <td class="py-2.5 px-3 text-slate-600 font-mono">${item.wait_seconds}s waiting</td>
-          <td class="py-2.5 px-3 text-slate-400 text-[11px]">${new Date(item.created_at).toLocaleTimeString()}</td>
-        </tr>
-      `;
-    }).join("");
-  } catch (err) {
-    console.error("Failed loading priority queue", err);
-  }
-}
-
-// Process Next Queue Item
-async function processNextQueueItem() {
-  try {
-    const res = await apiFetch("/api/queue/process_next", { method: "POST" });
-    const data = await res.json();
-    if (data.status === "empty") {
-      alert("Queue is empty. No requests waiting.");
-    } else {
-      loadQueueView();
-      loadRequests();
-      loadDonorAlerts();
-    }
-  } catch (err) {
-    console.error("Failed processing next queue item", err);
-  }
-}
-
-// Load Events Stream
-async function loadEvents() {
-  try {
-    const res = await apiFetch("/api/events");
-    const events = await res.json();
-    const stream = document.getElementById("events-stream");
-
-    if (!events || events.length === 0) {
-      stream.innerHTML = `<div class="text-center py-10 text-slate-400">Listening for live system events...</div>`;
-      return;
-    }
-
-    stream.innerHTML = "";
-    events.forEach(e => prependEventToStream(e));
-  } catch (err) {
-    console.error("Failed loading events", err);
-  }
-}
-
-function prependEventToStream(event) {
-  const stream = document.getElementById("events-stream");
-  if (!stream) return;
-
-  const typeConfig = {
-    "RequestCreated": { color: "bg-purple-100 text-purple-800 border-purple-200", icon: "fa-plus-circle" },
-    "DonorMatched": { color: "bg-sky-100 text-sky-800 border-sky-200", icon: "fa-magnifying-glass-chart" },
-    "DonorAlerted": { color: "bg-amber-100 text-amber-800 border-amber-200", icon: "fa-bell" },
-    "DonorAccepted": { color: "bg-emerald-100 text-emerald-800 border-emerald-200", icon: "fa-check-circle" },
-    "DonorDeclined": { color: "bg-rose-100 text-rose-800 border-rose-200", icon: "fa-circle-xmark" },
-    "NoResponseTimeout": { color: "bg-orange-100 text-orange-800 border-orange-200", icon: "fa-hourglass-end" },
-    "DonationCompleted": { color: "bg-teal-100 text-teal-800 border-teal-200", icon: "fa-droplet" }
-  }[event.event_type] || { color: "bg-slate-100 text-slate-800 border-slate-200", icon: "fa-circle-info" };
-
-  const eventCard = document.createElement("div");
-  eventCard.className = `p-3 rounded-lg border text-xs bg-white shadow-xs flex items-start justify-between gap-3`;
-  eventCard.innerHTML = `
-    <div class="flex items-start space-x-2.5">
-      <span class="px-2 py-0.5 rounded text-[10px] font-bold border flex items-center space-x-1 ${typeConfig.color}">
-        <i class="fa-solid ${typeConfig.icon}"></i>
-        <span>${event.event_type}</span>
-      </span>
-      <div>
-        <p class="font-semibold text-slate-800">${event.description}</p>
-        <div class="text-[10px] text-slate-500 font-mono mt-0.5">${JSON.stringify(event.payload)}</div>
+        <button type="button" onclick="openAuthModal()" class="primary-btn">
+          <i class="fa-solid fa-user-circle"></i>
+          Account
+        </button>
       </div>
     </div>
-    <span class="text-slate-400 text-[10px] shrink-0">${new Date(event.timestamp).toLocaleTimeString()}</span>
-  `;
+  </header>
 
-  // Prepend to stream
-  if (stream.firstChild) {
-    stream.insertBefore(eventCard, stream.firstChild);
-  } else {
-    stream.appendChild(eventCard);
-  }
-}
+  <!-- Main -->
+  <main class="max-w-7xl mx-auto px-4 py-7">
 
-// Benchmark Suite Execution
-async function runSystemBenchmark() {
-  const btn = document.getElementById("btn-run-benchmark");
-  const resultsBox = document.getElementById("benchmark-results-box");
-  const tableBody = document.getElementById("benchmark-table-body");
+    <!-- Hero -->
+    <section class="rounded-2xl bg-gradient-to-r from-rose-700 to-red-500 text-white p-6 sm:p-9 mb-7">
+      <div class="max-w-3xl">
+        <p class="text-rose-100 text-sm font-bold uppercase tracking-wider mb-2">
+          Donate Blood. Save Lives.
+        </p>
 
-  btn.disabled = true;
-  btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> <span>Evaluating...</span>`;
+        <h2 class="text-3xl sm:text-4xl font-black mb-4">
+          Every Second Counts.
+        </h2>
 
-  try {
-    const res = await apiFetch("/api/system/benchmark", { method: "POST" });
-    const data = await res.json();
+        <p class="text-rose-50 leading-relaxed mb-5">
+          Connect hospitals with compatible donors through intelligent
+          blood-group matching, urgency prioritization, and real-time alerts.
+        </p>
 
-    document.getElementById("bm-avg-latency").textContent = `${data.average_match_time_ms} ms`;
-    document.getElementById("bm-donors-eval").textContent = `${data.donors_evaluated} Donors`;
-    document.getElementById("bm-heap-status").textContent = "PASS";
+        <div class="flex flex-wrap gap-3">
+          <button type="button" onclick="openAuthModal()" class="bg-white text-rose-700 font-bold rounded-lg px-5 py-3">
+            <i class="fa-solid fa-user-plus mr-2"></i>
+            Join the Network
+          </button>
 
-    tableBody.innerHTML = data.tests.map(t => `
-      <tr class="hover:bg-slate-50">
-        <td class="py-2.5 px-3 font-bold text-slate-900">${t.scenario}</td>
-        <td class="py-2.5 px-3"><span class="px-2 py-0.5 rounded text-[10px] font-bold ${t.urgency === 'Critical' ? 'bg-rose-100 text-rose-800' : (t.urgency === 'Urgent' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800')}">${t.urgency}</span></td>
-        <td class="py-2.5 px-3 font-bold text-rose-700">${t.blood_group}</td>
-        <td class="py-2.5 px-3 text-slate-600">${t.hospital}</td>
-        <td class="py-2.5 px-3 font-semibold text-slate-800">${t.matches_found} Candidates</td>
-        <td class="py-2.5 px-3 font-mono font-bold text-emerald-700">${t.time_to_match_ms} ms</td>
-        <td class="py-2.5 px-3 font-mono text-slate-800">${Math.round(t.top_match_score * 100)}%</td>
-      </tr>
-    `).join("");
+          <button type="button" onclick="switchTab('requests')" class="border border-white/70 text-white font-bold rounded-lg px-5 py-3">
+            <i class="fa-solid fa-heart-pulse mr-2"></i>
+            View Requests
+          </button>
+        </div>
+      </div>
+    </section>
 
-    resultsBox.classList.remove("hidden");
-    loadRequests();
-    loadQueueView();
-  } catch (err) {
-    console.error("Benchmark failed", err);
-  } finally {
-    btn.disabled = false;
-    btn.innerHTML = `<i class="fa-solid fa-play"></i> <span>Run Full Benchmark</span>`;
-  }
-}
+    <!-- Statistics -->
+    <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
 
-// Reset System Data
-async function resetSystemData(donorCount) {
-  try {
-    const res = await apiFetch("/api/system/reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ donor_count: donorCount })
-    });
-    if (res.ok) {
-      loadInitialData();
-      alert(`System reset successfully with ${donorCount} donors.`);
-    }
-  } catch (err) {
-    console.error("Reset failed", err);
-  }
-}
+      <div class="section-card">
+        <div class="flex justify-between items-center">
+          <div>
+            <p class="text-sm text-slate-500">Active Donors</p>
+            <h3 id="stat-donors" class="text-3xl font-black mt-2">--</h3>
+          </div>
+          <div class="w-12 h-12 bg-rose-100 text-rose-600 rounded-xl flex items-center justify-center text-xl">
+            <i class="fa-solid fa-users"></i>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <div class="flex justify-between items-center">
+          <div>
+            <p class="text-sm text-slate-500">Priority Queue</p>
+            <h3 id="stat-queue" class="text-3xl font-black mt-2">--</h3>
+          </div>
+          <div class="w-12 h-12 bg-amber-100 text-amber-600 rounded-xl flex items-center justify-center text-xl">
+            <i class="fa-solid fa-list-ol"></i>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <p class="text-sm text-slate-500">Matching System</p>
+        <h3 class="text-xl font-black text-emerald-600 mt-2">Smart Matching</h3>
+        <p class="text-xs text-slate-500 mt-1">Compatibility + distance + availability</p>
+      </div>
+
+      <div class="section-card">
+        <p class="text-sm text-slate-500">Real-Time Events</p>
+        <h3 id="ws-status" class="text-sm font-bold text-slate-600 mt-3">
+          Connecting to event system...
+        </h3>
+        <p class="text-xs text-slate-400 mt-2">WebSocket connection</p>
+      </div>
+
+    </section>
+
+    <!-- Navigation -->
+    <nav class="bg-white border border-slate-200 rounded-xl p-2 mb-7 flex gap-2 overflow-x-auto">
+      <button id="tab-btn-requests" class="tab-btn active-tab border border-transparent rounded-lg px-4 py-3" onclick="switchTab('requests')">
+        <i class="fa-solid fa-hand-holding-medical mr-2"></i>Requests
+      </button>
+
+      <button id="tab-btn-map" class="tab-btn border border-transparent rounded-lg px-4 py-3" onclick="switchTab('map')">
+        <i class="fa-solid fa-map-location-dot mr-2"></i>Live Map
+      </button>
+
+      <button id="tab-btn-donor" class="tab-btn border border-transparent rounded-lg px-4 py-3" onclick="switchTab('donor')">
+        <i class="fa-solid fa-user-check mr-2"></i>Donor Portal
+        <span id="donor-badge-count" class="hidden ml-1 rounded-full bg-rose-600 text-white px-2 py-0.5 text-xs"></span>
+      </button>
+
+      <button id="tab-btn-hospital" class="tab-btn border border-transparent rounded-lg px-4 py-3" onclick="switchTab('hospital')">
+        <i class="fa-solid fa-hospital mr-2"></i>Hospital Portal
+      </button>
+
+      <button id="tab-btn-queue" class="tab-btn border border-transparent rounded-lg px-4 py-3" onclick="switchTab('queue')">
+        <i class="fa-solid fa-layer-group mr-2"></i>Priority Queue
+      </button>
+
+      <button id="tab-btn-events" class="tab-btn border border-transparent rounded-lg px-4 py-3" onclick="switchTab('events')">
+        <i class="fa-solid fa-tower-broadcast mr-2"></i>Live Events
+      </button>
+
+      <button id="tab-btn-benchmark" class="tab-btn border border-transparent rounded-lg px-4 py-3" onclick="switchTab('benchmark')">
+        <i class="fa-solid fa-gauge-high mr-2"></i>Benchmark
+      </button>
+    </nav>
+
+    <!-- Requests Tab -->
+    <section id="tab-requests" class="tab-pane space-y-6">
+
+      <div class="section-card">
+        <div class="flex flex-wrap justify-between items-center gap-3 mb-5">
+          <div>
+            <h2 class="text-xl font-black">Create Blood Request</h2>
+            <p class="text-sm text-slate-500 mt-1">Submit a request for smart donor matching.</p>
+          </div>
+          <span class="text-xs font-bold text-rose-700 bg-rose-50 px-3 py-2 rounded-lg">
+            <i class="fa-solid fa-bolt mr-1"></i>Priority Enabled
+          </span>
+        </div>
+
+        <form onsubmit="handleCreateRequest(event)" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          <div>
+            <label for="req-hospital" class="block text-sm font-semibold mb-2">Hospital</label>
+            <select id="req-hospital" class="field" required>
+              <option value="">Loading hospitals...</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="req-patient" class="block text-sm font-semibold mb-2">Patient Name</label>
+            <input id="req-patient" class="field" type="text" placeholder="Enter patient name" required>
+          </div>
+
+          <div>
+            <label for="req-blood-group" class="block text-sm font-semibold mb-2">Required Blood Group</label>
+            <select id="req-blood-group" class="field" required>
+              <option value="O+">O+</option>
+              <option value="O-">O-</option>
+              <option value="A+">A+</option>
+              <option value="A-">A-</option>
+              <option value="B+">B+</option>
+              <option value="B-">B-</option>
+              <option value="AB+">AB+</option>
+              <option value="AB-">AB-</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="req-units" class="block text-sm font-semibold mb-2">Units Required</label>
+            <input id="req-units" class="field" type="number" min="1" max="20" value="1" required>
+          </div>
+
+          <div class="md:col-span-2">
+            <p class="block text-sm font-semibold mb-2">Urgency Level</p>
+
+            <div class="flex flex-wrap gap-4">
+              <label class="flex items-center gap-2 text-sm">
+                <input type="radio" name="urgency" value="Normal" checked>
+                <span class="text-blue-700 font-semibold">Normal</span>
+              </label>
+
+              <label class="flex items-center gap-2 text-sm">
+                <input type="radio" name="urgency" value="Urgent">
+                <span class="text-amber-700 font-semibold">Urgent</span>
+              </label>
+
+              <label class="flex items-center gap-2 text-sm">
+                <input type="radio" name="urgency" value="Critical">
+                <span class="text-rose-700 font-semibold">Critical</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="md:col-span-2">
+            <label for="req-notes" class="block text-sm font-semibold mb-2">Additional Notes</label>
+            <textarea id="req-notes" class="field" rows="3" placeholder="Optional clinical or request notes"></textarea>
+          </div>
+
+          <div class="md:col-span-2">
+            <button type="submit" class="primary-btn">
+              <i class="fa-solid fa-magnifying-glass"></i>
+              Create Request & Find Donors
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div class="section-card">
+        <div class="mb-5">
+          <h2 class="text-xl font-black">Blood Requests</h2>
+          <p class="text-sm text-slate-500 mt-1">Request status and ranked donor matches.</p>
+        </div>
+
+        <div id="requests-list" class="space-y-4">
+          <p class="text-center py-8 text-slate-400">Loading blood requests...</p>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Map Tab -->
+    <section id="tab-map" class="tab-pane hidden">
+      <div class="section-card">
+        <div class="mb-5">
+          <h2 class="text-xl font-black">Live Donor & Hospital Map</h2>
+          <p class="text-sm text-slate-500 mt-1">Explore donor and hospital locations around Chandigarh Tricity.</p>
+        </div>
+
+        <div id="leaflet-map"></div>
+
+        <div class="flex flex-wrap gap-4 mt-4 text-sm">
+          <span><span class="inline-block w-3 h-3 rounded-full bg-rose-600 mr-2"></span>Hospitals</span>
+          <span><span class="inline-block w-3 h-3 rounded-full bg-emerald-500 mr-2"></span>Eligible and available donors</span>
+          <span><span class="inline-block w-3 h-3 rounded-full bg-amber-500 mr-2"></span>Other donors</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Donor Portal -->
+    <section id="tab-donor" class="tab-pane hidden space-y-6">
+
+      <div class="section-card">
+        <h2 class="text-xl font-black mb-2">Donor Portal</h2>
+        <p class="text-sm text-slate-500 mb-5">Review donor information, eligibility, and availability.</p>
+
+        <label for="active-donor-select" class="block text-sm font-semibold mb-2">Select Donor Persona</label>
+        <select id="active-donor-select" class="field mb-6" onchange="handleDonorSelect(this.value)">
+          <option value="">Loading donors...</option>
+        </select>
+
+        <div class="border border-slate-200 rounded-xl p-5">
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h3 id="donor-card-name" class="text-2xl font-black">Donor</h3>
+              <p id="donor-card-location" class="text-sm text-slate-500 mt-2">Location</p>
+              <p id="donor-card-meta" class="text-sm text-slate-600 mt-2">Age and gender</p>
+            </div>
+
+            <div id="donor-card-bg" class="text-2xl font-black text-rose-700 bg-rose-50 rounded-xl px-5 py-3">
+              --
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6">
+            <div class="bg-slate-50 rounded-lg p-4">
+              <p class="text-xs text-slate-500">Weight</p>
+              <p id="donor-card-weight" class="text-lg font-bold mt-1">--</p>
+            </div>
+
+            <div class="bg-slate-50 rounded-lg p-4">
+              <p class="text-xs text-slate-500">Donations</p>
+              <p id="donor-card-donations" class="text-lg font-bold mt-1">--</p>
+            </div>
+
+            <div class="bg-slate-50 rounded-lg p-4">
+              <p class="text-xs text-slate-500">Response Reliability</p>
+              <p id="donor-card-response" class="text-lg font-bold mt-1">--</p>
+            </div>
+          </div>
+
+          <div class="mt-6">
+            <span id="donor-cooldown-badge" class="px-3 py-1 rounded text-sm font-bold bg-emerald-100 text-emerald-800">
+              Checking eligibility...
+            </span>
+
+            <div class="w-full bg-slate-200 h-2 rounded-full mt-4 overflow-hidden">
+              <div id="donor-cooldown-bar" class="bg-emerald-500 h-2 rounded-full" style="width:0%"></div>
+            </div>
+
+            <p id="donor-cooldown-desc" class="text-sm text-slate-500 mt-3">
+              Eligibility information will appear here.
+            </p>
+          </div>
+
+          <div class="flex flex-wrap items-center justify-between gap-3 mt-6 pt-5 border-t border-slate-200">
+            <div>
+              <p class="font-bold">Donation Availability</p>
+              <p class="text-xs text-slate-500 mt-1">Toggle whether you are available to be matched.</p>
+            </div>
+
+            <label class="flex items-center gap-3 cursor-pointer">
+              <span class="text-sm font-semibold">Available</span>
+              <input id="donor-availability-toggle" type="checkbox" class="w-5 h-5 accent-rose-600" onchange="handleToggleAvailability(this.checked)">
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-card">
+        <h2 class="text-xl font-black mb-2">Donation Alerts</h2>
+        <p class="text-sm text-slate-500 mb-5">Accept or decline incoming donation requests.</p>
+
+        <div id="donor-alerts-list" class="space-y-4">
+          <p class="text-center py-8 text-slate-400">Loading alerts...</p>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Hospital Portal -->
+    <section id="tab-hospital" class="tab-pane hidden">
+      <div class="section-card">
+        <h2 class="text-xl font-black mb-2">Hospital Portal</h2>
+        <p class="text-sm text-slate-500 mb-5">Hospitals can create requests through the Requests tab.</p>
+
+        <button type="button" onclick="switchTab('requests')" class="primary-btn">
+          <i class="fa-solid fa-plus"></i>
+          Create Blood Request
+        </button>
+
+        <div class="mt-6 bg-sky-50 border border-sky-100 rounded-xl p-4">
+          <h3 class="font-bold text-sky-900">How smart matching works</h3>
+          <ul class="list-disc ml-5 mt-3 text-sm text-sky-800 space-y-2">
+            <li>Blood-group compatibility is evaluated.</li>
+            <li>Donors are ranked using matching criteria.</li>
+            <li>Urgent requests receive priority.</li>
+            <li>Donor responses update the request workflow.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- Priority Queue -->
+    <section id="tab-queue" class="tab-pane hidden">
+      <div class="section-card">
+        <div class="flex flex-wrap justify-between items-center gap-3 mb-5">
+          <div>
+            <h2 class="text-xl font-black">Priority Queue Monitor</h2>
+            <p class="text-sm text-slate-500 mt-1">Requests ordered by priority.</p>
+          </div>
+
+          <button type="button" onclick="processNextQueueItem()" class="primary-btn">
+            <i class="fa-solid fa-forward-step"></i>
+            Process Next
+          </button>
+        </div>
+
+        <div class="table-scroll">
+          <table class="w-full text-sm text-left">
+            <thead class="bg-slate-50 text-slate-600">
+              <tr>
+                <th class="py-3 px-3">Position</th>
+                <th class="py-3 px-3">Urgency</th>
+                <th class="py-3 px-3">Patient / Hospital</th>
+                <th class="py-3 px-3">Blood Group</th>
+                <th class="py-3 px-3">Waiting</th>
+                <th class="py-3 px-3">Created</th>
+              </tr>
+            </thead>
+
+            <tbody id="queue-table-body" class="divide-y divide-slate-100">
+              <tr>
+                <td colspan="6" class="text-center py-8 text-slate-400">Loading queue...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Live Events -->
+    <section id="tab-events" class="tab-pane hidden">
+      <div class="section-card">
+        <div class="mb-5">
+          <h2 class="text-xl font-black">Real-Time Event Stream</h2>
+          <p class="text-sm text-slate-500 mt-1">System events received from the backend.</p>
+        </div>
+
+        <div id="events-stream" class="space-y-3">
+          <p class="text-center py-8 text-slate-400">Listening for live system events...</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Benchmark -->
+    <section id="tab-benchmark" class="tab-pane hidden">
+      <div class="section-card">
+        <h2 class="text-xl font-black mb-2">System Benchmark</h2>
+        <p class="text-sm text-slate-500 mb-5">Evaluate smart matching performance using the backend benchmark endpoint.</p>
+
+        <button id="btn-run-benchmark" type="button" onclick="runSystemBenchmark()" class="primary-btn">
+          <i class="fa-solid fa-play"></i>
+          <span>Run Full Benchmark</span>
+        </button>
+
+        <div id="benchmark-results-box" class="hidden mt-7">
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+            <div class="bg-slate-50 rounded-xl p-4">
+              <p class="text-sm text-slate-500">Average Match Latency</p>
+              <p id="bm-avg-latency" class="text-2xl font-black mt-2">--</p>
+            </div>
+
+            <div class="bg-slate-50 rounded-xl p-4">
+              <p class="text-sm text-slate-500">Donors Evaluated</p>
+              <p id="bm-donors-eval" class="text-2xl font-black mt-2">--</p>
+            </div>
+
+            <div class="bg-slate-50 rounded-xl p-4">
+              <p class="text-sm text-slate-500">Heap Status</p>
+              <p id="bm-heap-status" class="text-2xl font-black text-emerald-600 mt-2">--</p>
+            </div>
+          </div>
+
+          <div class="table-scroll">
+            <table class="w-full text-sm text-left">
+              <thead class="bg-slate-50">
+                <tr>
+                  <th class="py-3 px-3">Scenario</th>
+                  <th class="py-3 px-3">Urgency</th>
+                  <th class="py-3 px-3">Blood Group</th>
+                  <th class="py-3 px-3">Hospital</th>
+                  <th class="py-3 px-3">Matches</th>
+                  <th class="py-3 px-3">Latency</th>
+                  <th class="py-3 px-3">Top Score</th>
+                </tr>
+              </thead>
+
+              <tbody id="benchmark-table-body" class="divide-y divide-slate-100"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Authentication Modal -->
+  <div id="auth-modal" class="hidden fixed inset-0 z-50 bg-slate-950/60 p-4 overflow-y-auto">
+    <div class="max-w-xl w-full mx-auto my-8 bg-white rounded-2xl shadow-2xl overflow-hidden">
+
+      <div class="flex items-center justify-between p-5 border-b border-slate-200">
+        <div>
+          <h2 class="text-xl font-black">Account Access</h2>
+          <p class="text-sm text-slate-500 mt-1">Login or create an account.</p>
+        </div>
+
+        <button type="button" onclick="closeAuthModal()" class="text-slate-500 hover:text-rose-600 text-xl" aria-label="Close">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+
+      <!-- Auth tabs -->
+      <div class="flex border-b border-slate-200">
+        <button id="auth-btn-login" type="button" onclick="switchAuthTab('login')" class="flex-1 py-3 text-center font-bold">
+          Login
+        </button>
+
+        <button id="auth-btn-reg-donor" type="button" onclick="switchAuthTab('reg-donor')" class="flex-1 py-3 text-center text-slate-600">
+          Donor
+        </button>
+
+        <button id="auth-btn-reg-hosp" type="button" onclick="switchAuthTab('reg-hosp')" class="flex-1 py-3 text-center text-slate-600">
+          Hospital
+        </button>
+      </div>
+
+      <div class="p-5">
+
+        <!-- Login -->
+        <div id="auth-pane-login">
+          <form onsubmit="handleLoginSubmit(event)" class="space-y-4">
+
+            <div>
+              <label for="login-email" class="block text-sm font-semibold mb-2">Email</label>
+              <input id="login-email" class="field" type="email" autocomplete="email" required placeholder="you@example.com">
+            </div>
+
+            <div>
+              <label for="login-password" class="block text-sm font-semibold mb-2">Password</label>
+              <input id="login-password" class="field" type="password" autocomplete="current-password" required placeholder="Enter password">
+            </div>
+
+            <p id="login-error-msg" class="hidden text-sm text-rose-700 bg-rose-50 rounded-lg p-3"></p>
+
+            <button type="submit" class="primary-btn w-full">
+              <i class="fa-solid fa-right-to-bracket"></i>
+              Login
+            </button>
+          </form>
+        </div>
+
+        <!-- Donor registration -->
+        <div id="auth-pane-reg-donor" class="hidden">
+          <form onsubmit="handleDonorRegisterSubmit(event)" class="space-y-4">
+
+            <div>
+              <label for="reg-donor-name" class="block text-sm font-semibold mb-2">Full Name</label>
+              <input id="reg-donor-name" class="field" type="text" required>
+            </div>
+
+            <div>
+              <label for="reg-donor-email" class="block text-sm font-semibold mb-2">Email</label>
+              <input id="reg-donor-email" class="field" type="email" required>
+            </div>
+
+            <div>
+              <label for="reg-donor-password" class="block text-sm font-semibold mb-2">Password</label>
+              <input id="reg-donor-password" class="field" type="password" minlength="8" required>
+            </div>
+
+            <div>
+              <label for="reg-donor-phone" class="block text-sm font-semibold mb-2">Phone</label>
+              <input id="reg-donor-phone" class="field" type="tel" required>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label for="reg-donor-bg" class="block text-sm font-semibold mb-2">Blood Group</label>
+                <select id="reg-donor-bg" class="field" required>
+                  <option value="O+">O+</option>
+                  <option value="O-">O-</option>
+                  <option value="A+">A+</option>
+                  <option value="A-">A-</option>
+                  <option value="B+">B+</option>
+                  <option value="B-">B-</option>
+                  <option value="AB+">AB+</option>
+                  <option value="AB-">AB-</option>
+                </select>
+              </div>
+
+              <div>
+                <label for="reg-donor-gender" class="block text-sm font-semibold mb-2">Gender</label>
+                <select id="reg-donor-gender" class="field" required>
+                  <option value="">Select</option>
+                  <option value="Male">Male</option>
+                  <option value="Female">Female</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+
+              <div>
+                <label for="reg-donor-age" class="block text-sm font-semibold mb-2">Age</label>
+                <input id="reg-donor-age" class="field" type="number" min="18" max="65" required>
+              </div>
+
+              <div>
+                <label for="reg-donor-weight" class="block text-sm font-semibold mb-2">Weight (kg)</label>
+                <input id="reg-donor-weight" class="field" type="number" min="1" step="0.1" required>
+              </div>
+            </div>
+
+            <div>
+              <label for="reg-donor-locality" class="block text-sm font-semibold mb-2">Location</label>
+              <select id="reg-donor-locality" class="field" required>
+                <option value="Chandigarh, India|30.7333|76.7794">Chandigarh</option>
+                <option value="Mohali, Punjab, India|30.7046|76.7179">Mohali</option>
+                <option value="Kharar, Punjab, India|30.7463|76.6469">Kharar</option>
+                <option value="Panchkula, Haryana, India|30.6942|76.8606">Panchkula</option>
+                <option value="Zirakpur, Punjab, India|30.6425|76.8173">Zirakpur</option>
+              </select>
+            </div>
+
+            <label class="flex items-start gap-3 text-sm">
+              <input id="reg-donor-health" type="checkbox" class="mt-1 accent-rose-600" required>
+              <span>I confirm that the health information I have provided is accurate and I meet the eligibility requirements stated by the service.</span>
+            </label>
+
+            <p id="reg-donor-error" class="hidden text-sm text-rose-700 bg-rose-50 rounded-lg p-3"></p>
+
+            <button type="submit" class="primary-btn w-full">
+              <i class="fa-solid fa-user-plus"></i>
+              Register as Donor
+            </button>
+          </form>
+        </div>
+
+        <!-- Hospital registration -->
+        <div id="auth-pane-reg-hosp" class="hidden">
+          <form onsubmit="handleHospitalRegisterSubmit(event)" class="space-y-4">
+
+            <div>
+              <label for="reg-hosp-name" class="block text-sm font-semibold mb-2">Hospital Name</label>
+              <input id="reg-hosp-name" class="field" type="text" required>
+            </div>
+
+            <div>
+              <label for="reg-hosp-email" class="block text-sm font-semibold mb-2">Official Email</label>
+              <input id="reg-hosp-email" class="field" type="email" required>
+            </div>
+
+            <div>
+              <label for="reg-hosp-password" class="block text-sm font-semibold mb-2">Password</label>
+              <input id="reg-hosp-password" class="field" type="password" minlength="8" required>
+            </div>
+
+            <div>
+              <label for="reg-hosp-phone" class="block text-sm font-semibold mb-2">Phone</label>
+              <input id="reg-hosp-phone" class="field" type="tel" required>
+            </div>
+
+            <div>
+              <label for="reg-hosp-license" class="block text-sm font-semibold mb-2">License Number</label>
+              <input id="reg-hosp-license" class="field" type="text" required>
+            </div>
+
+            <div>
+              <label for="reg-hosp-type" class="block text-sm font-semibold mb-2">Hospital Type</label>
+              <select id="reg-hosp-type" class="field" required>
+                <option value="Government">Government</option>
+                <option value="Private">Private</option>
+                <option value="Multi-specialty">Multi-specialty</option>
+                <option value="Blood Bank">Blood Bank</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+
+            <div>
+              <label for="reg-hosp-locality" class="block text-sm font-semibold mb-2">Hospital Location</label>
+              <select id="reg-hosp-locality" class="field" required>
+                <option value="Chandigarh, India|30.7333|76.7794">Chandigarh</option>
+                <option value="Mohali, Punjab, India|30.7046|76.7179">Mohali</option>
+                <option value="Kharar, Punjab, India|30.7463|76.6469">Kharar</option>
+                <option value="Panchkula, Haryana, India|30.6942|76.8606">Panchkula</option>
+                <option value="Zirakpur, Punjab, India|30.6425|76.8173">Zirakpur</option>
+              </select>
+            </div>
+
+            <p id="reg-hosp-error" class="hidden text-sm text-rose-700 bg-rose-50 rounded-lg p-3"></p>
+
+            <button type="submit" class="primary-btn w-full">
+              <i class="fa-solid fa-hospital"></i>
+              Register Hospital
+            </button>
+          </form>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-200 bg-white mt-10">
+    <div class="max-w-7xl mx-auto px-4 py-6 flex flex-wrap justify-between items-center gap-3">
+      <p class="text-sm text-slate-500">
+        BloodLink — Blood Donation Network with Smart Matching
+      </p>
+      <p class="text-xs text-slate-400">
+        Built for educational and demonstration purposes.
+      </p>
+    </div>
+  </footer>
+
+  <!-- Leaflet JS must load before app.js -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Your application logic -->
+  <script src="./app.js" defer></script>
+
+</body>
+</html>
